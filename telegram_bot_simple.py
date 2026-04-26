@@ -2068,9 +2068,12 @@ def handle_callback_query(update):
                     # Create regular message without reply quote
                     reply_message = "*សូមជ្រើសរើសចំនួនដែលចង់ទិញ៖*"
 
-                    # Build inline keyboard with all available quantities (rows of 5)
+                    # Build inline keyboard with all available quantities (rows of 5).
+                    # Encode the account-type id in the callback so old quantity
+                    # messages stay clickable even after the session changes.
+                    type_cb_id = _type_callback_id(account_type)
                     qty_inline = [
-                        {'text': str(n), 'callback_data': f'qty:{n}'}
+                        {'text': str(n), 'callback_data': f'qty:{type_cb_id}:{n}'}
                         for n in range(1, count + 1)
                     ]
                     qty_inline_rows = [qty_inline[i:i+5] for i in range(0, len(qty_inline), 5)]
@@ -2337,16 +2340,56 @@ def handle_callback_query(update):
 
         # Handle quantity number button press
         elif callback_data.startswith('qty:'):
-            session = user_sessions.get(user_id)
-            # Allow picking a quantity both during initial selection and while
-            # the order summary is open (so the user can change their mind).
-            if not session or session.get('state') not in ('waiting_for_quantity', 'waiting_for_confirmation'):
+            # Two callback formats are supported:
+            #   qty:<N>                 (legacy — relies on existing session)
+            #   qty:<type_cb_id>:<N>    (new — carries the account type so any
+            #                            old quantity message stays clickable)
+            parts = callback_data.split(':')
+            target_type = None
+            quantity = None
+            try:
+                if len(parts) == 3:
+                    target_type = _account_type_from_callback_id(parts[1])
+                    quantity = int(parts[2])
+                elif len(parts) == 2:
+                    quantity = int(parts[1])
+            except ValueError:
+                quantity = None
+
+            if quantity is None or quantity < 1:
                 answer_callback(callback_query['id'])
                 return
-            try:
-                quantity = int(callback_data.split(':', 1)[1])
-            except (ValueError, IndexError):
-                answer_callback(callback_query['id'], 'ចំនួនមិនត្រឹមត្រូវ។', True)
+
+            session = user_sessions.get(user_id)
+
+            # If the click is for a different account type than the active
+            # session (or there is no session), rebuild the session from the
+            # encoded account type so old quantity messages still work.
+            if target_type and (
+                not session
+                or session.get('account_type') != target_type
+                or session.get('state') not in ('waiting_for_quantity', 'waiting_for_confirmation')
+            ):
+                if target_type not in accounts_data.get('account_types', {}):
+                    answer_callback(callback_query['id'], 'ប្រភេទនេះមិនមានទៀតហើយ។', True)
+                    return
+                with _data_lock:
+                    available = len(accounts_data['account_types'].get(target_type, []))
+                    price = accounts_data.get('prices', {}).get(target_type, 0)
+                if available <= 0:
+                    answer_callback(callback_query['id'], f"សូមអភ័យទោស Account {target_type} អស់ពីស្តុក 🪤", True)
+                    return
+                with _data_lock:
+                    user_sessions[user_id] = {
+                        'state': 'waiting_for_quantity',
+                        'account_type': target_type,
+                        'price': price,
+                        'available_count': available,
+                    }
+                session = user_sessions[user_id]
+            elif not session or session.get('state') not in ('waiting_for_quantity', 'waiting_for_confirmation'):
+                # Legacy button with no session context — nothing we can do.
+                answer_callback(callback_query['id'])
                 return
 
             if quantity > session['available_count']:
