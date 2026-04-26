@@ -1175,7 +1175,12 @@ def _start_qr_countdown(chat_id, user_id, msg_id, md5_hash, amount, started_at):
                     _qr_caption(amount, remaining),
                     reply_markup=CHECK_PAYMENT_KEYBOARD,
                 )
-                time.sleep(1)
+                # Sleep until the next whole-second boundary from started_at
+                # so the countdown ticks exactly every 1 second regardless of
+                # how long the API call above took.
+                next_tick = started_at + (elapsed + 1)
+                sleep_time = max(0, next_tick - time.time())
+                time.sleep(sleep_time)
         except Exception as e:
             logger.error(f"QR countdown thread failed: {e}")
     threading.Thread(target=run, daemon=True).start()
