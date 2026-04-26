@@ -1297,8 +1297,7 @@ def show_account_selection(chat_id):
 
 MAIN_REPLY_KEYBOARD = {
     'keyboard': [
-        [{'text': '💵 ទិញគូប៉ុង'}],
-        [{'text': '👤គណនី'}, {'text': '🧾ប្រវត្តិទិញ'}]
+        [{'text': '💵 ទិញគូប៉ុង'}]
     ],
     'resize_keyboard': True,
     'is_persistent': True
@@ -1307,7 +1306,6 @@ MAIN_REPLY_KEYBOARD = {
 ADMIN_REPLY_KEYBOARD = {
     'keyboard': [
         [{'text': '💵 ទិញគូប៉ុង'}],
-        [{'text': '👤គណនី'}, {'text': '🧾ប្រវត្តិទិញ'}],
         [{'text': '⚙️កំណត់'}]
     ],
     'resize_keyboard': True,
@@ -2465,54 +2463,6 @@ def handle_message(update):
                     show_account_selection_local()
             else:
                 show_account_selection_local()
-            return
-
-        if text.strip() == '👤គណនី':
-            full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or 'N/A'
-            account_info = (
-                f"👤 <b>ឈ្មោះ:</b> {full_name}\n"
-                f'<tg-emoji emoji-id="5422683699130933153">🪪</tg-emoji> <b>ID:</b> <code>{user_id}</code>'
-            )
-            send_message(chat_id, account_info, parse_mode="HTML", reply_markup=_main_kb(user_id))
-            return
-
-        if text.strip() == '🧾ប្រវត្តិទិញ':
-            rows = get_purchase_history(user_id, limit=20)
-            if not rows:
-                send_message(chat_id, "📭 <b>អ្នកមិនទាន់មានប្រវត្តិទិញទេ។</b>", parse_mode="HTML")
-            else:
-                import datetime
-                cambodia_tz = datetime.timezone(datetime.timedelta(hours=7))
-                send_message(chat_id, "ការទិញចំនួន ២០ ដងចុងក្រោយរបស់អ្នក:")
-                for row in rows:
-                    try:
-                        dt = datetime.datetime.fromisoformat(str(row.get('purchased_at', '')).replace('Z', '+00:00'))
-                        dt_kh = dt.astimezone(cambodia_tz).strftime("%d/%m/%Y %H:%M")
-                    except Exception:
-                        dt_kh = str(row.get('purchased_at', ''))
-                    accs = row.get('accounts') or []
-                    if isinstance(accs, str):
-                        try:
-                            accs = json.loads(accs)
-                        except Exception:
-                            accs = []
-                    coupon_lines = ""
-                    for acc in accs:
-                        if 'email' in acc:
-                            coupon_lines += f"\n{acc['email']}"
-                        else:
-                            val = acc.get('phone') or acc.get('password') or ''
-                            coupon_lines += f"\n{val}"
-                    msg = (
-                        f"⎙ <b>ព័ត៌មានប្រតិបត្តិការ</b>\n\n"
-                        f"▫️ ប្រភេទ: {row.get('account_type', 'N/A')}\n"
-                        f"▫️ ចំនួន: {row.get('quantity', 0)}\n"
-                        f"▫️ តម្លៃ: {row.get('total_price', 0)}$\n"
-                        f"▫️កាលបរិច្ឆេទ: {dt_kh}\n"
-                        f"\n<b>⌲ គូប៉ុង E-GetS</b>\n"
-                        f"{coupon_lines}"
-                    )
-                    send_message(chat_id, msg, parse_mode="HTML", reply_to_message_id=False)
             return
 
         # Admin: open settings menu via the ⚙️កំណត់ keyboard button
