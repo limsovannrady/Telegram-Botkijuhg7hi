@@ -2387,15 +2387,15 @@ def handle_message(update):
                     del user_sessions[user_id]
             if had_session:
                 save_sessions_async()
-            try:
-                user_display_name = user.get('last_name') or user.get('first_name', '')
-                welcome_caption = f'<tg-emoji emoji-id="5967385500447675533">🎉</tg-emoji> <b>សូមស្វាគមន៍ {user_display_name}</b>'
-                send_start_banner(chat_id, caption=welcome_caption, parse_mode='HTML', message_effect_id='5046509860389126442', reply_markup=_main_kb(user_id))
-            except Exception as e:
-                logger.error(f"Failed to send banner image: {e}")
-            # For buyers (non-admins), immediately show the account selection
-            # since they no longer have the persistent main keyboard.
-            if not is_admin(user_id):
+            if is_admin(user_id):
+                try:
+                    user_display_name = user.get('last_name') or user.get('first_name', '')
+                    welcome_caption = f'<tg-emoji emoji-id="5967385500447675533">🎉</tg-emoji> <b>សូមស្វាគមន៍ {user_display_name}</b>'
+                    send_start_banner(chat_id, caption=welcome_caption, parse_mode='HTML', message_effect_id='5046509860389126442', reply_markup=_main_kb(user_id))
+                except Exception as e:
+                    logger.error(f"Failed to send banner image: {e}")
+            else:
+                # Buyers: skip the banner and go straight to account selection.
                 show_account_selection_local()
             return
 
