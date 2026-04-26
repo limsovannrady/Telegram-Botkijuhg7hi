@@ -1175,7 +1175,7 @@ def _start_qr_countdown(chat_id, user_id, msg_id, md5_hash, amount, started_at):
                     _qr_caption(amount, remaining),
                     reply_markup=CHECK_PAYMENT_KEYBOARD,
                 )
-                time.sleep(30)
+                time.sleep(5)
         except Exception as e:
             logger.error(f"QR countdown thread failed: {e}")
     threading.Thread(target=run, daemon=True).start()
