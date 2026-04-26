@@ -2099,7 +2099,7 @@ def handle_callback_query(update):
         elif callback_data == 'confirm_buy':
             session = user_sessions.get(user_id)
             if not session or session.get('state') != 'waiting_for_confirmation':
-                answer_callback(callback_query['id'], 'មិនមានការទិញដែលកំពុងរង់ចាំ។', True)
+                answer_callback(callback_query['id'])
                 return
             answer_callback(callback_query['id'], 'កំពុងបង្កើត QR...')
             with _data_lock:
@@ -2385,7 +2385,7 @@ def handle_callback_query(update):
             if not session or session.get('state') != 'payment_pending':
                 session = get_pending_payment(user_id)
             if not session:
-                answer_callback(callback_query['id'], 'មិនមានការទិញដែលកំពុងរង់ចាំ។', True)
+                answer_callback(callback_query['id'])
                 return
 
             md5 = session.get('md5_hash')
