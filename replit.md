@@ -1,96 +1,124 @@
-# Workspace
+# Telegram Bot Project
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+This is a simple Telegram bot application written in Python that responds to the `/start` command with a Khmer language message. The bot uses the Telegram Bot API directly via HTTP requests to avoid library conflicts and ensures reliable operation. The bot runs as @Coupon2025_Robot.
 
-## Stack
+## User Preferences
 
-- **Monorepo tool**: pnpm workspaces
-- **Node.js version**: 24
-- **Package manager**: pnpm
-- **TypeScript version**: 5.9
-- **API framework**: Express 5
-- **Database**: PostgreSQL + Drizzle ORM
-- **Validation**: Zod (`zod/v4`), `drizzle-zod`
-- **API codegen**: Orval (from OpenAPI spec)
-- **Build**: esbuild (CJS bundle)
+Preferred communication style: Simple, everyday language.
 
-## Structure
+## System Architecture
 
-```text
-artifacts-monorepo/
-├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
-├── lib/                    # Shared libraries
-│   ├── api-spec/           # OpenAPI spec + Orval codegen config
-│   ├── api-client-react/   # Generated React Query hooks
-│   ├── api-zod/            # Generated Zod schemas from OpenAPI
-│   └── db/                 # Drizzle ORM schema + DB connection
-├── scripts/                # Utility scripts (single workspace package)
-│   └── src/                # Individual .ts scripts, run via `pnpm --filter @workspace/scripts run <script>`
-├── pnpm-workspace.yaml     # pnpm workspace (artifacts/*, lib/*, lib/integrations/*, scripts)
-├── tsconfig.base.json      # Shared TS options (composite, bundler resolution, es2022)
-├── tsconfig.json           # Root TS project references
-└── package.json            # Root package with hoisted devDeps
-```
+The application follows a simple HTTP-based architecture:
 
-## TypeScript & Composite Projects
+- **Main Bot Logic**: `telegram_bot_simple.py` contains the core bot functionality using direct API calls
+- **Configuration Management**: Configuration is embedded in the main file for simplicity
+- **Logging Strategy**: File-based and console logging with UTF-8 support for Khmer text
+- **API Integration**: Uses `requests` library for direct HTTP communication with Telegram Bot API
+- **Concurrency Model**: Uses a bounded worker pool for Telegram updates and a separate background pool for non-critical database/message cleanup tasks.
 
-Every package extends `tsconfig.base.json` which sets `composite: true`. The root `tsconfig.json` lists all packages as project references. This means:
+The architecture avoids complex library dependencies and ensures reliable operation through direct API usage.
 
-- **Always typecheck from the root** — run `pnpm run typecheck` (which runs `tsc --build --emitDeclarationOnly`). This builds the full dependency graph so that cross-package imports resolve correctly. Running `tsc` inside a single package will fail if its dependencies haven't been built yet.
-- **`emitDeclarationOnly`** — we only emit `.d.ts` files during typecheck; actual JS bundling is handled by esbuild/tsx/vite...etc, not `tsc`.
-- **Project references** — when package A depends on package B, A's `tsconfig.json` must list B in its `references` array. `tsc --build` uses this to determine build order and skip up-to-date packages.
+## Key Components
 
-## Root Scripts
+### Bot Functions
+- **handle_message()**: Main message processor with state management
+- **send_message()**: Direct API message sending
+- **get_updates()**: Polling for new messages
+- **send_start_banner()**: Sends the welcome banner and reuses Telegram's cached file ID after the first upload for faster `/start` responses.
+- **Thread-local Reply Context**: Keeps reply targets isolated per worker so concurrent users do not affect each other's replies.
+- **Channel Post Relay**: Copies posts from the configured `TELEGRAM_CHANNEL_ID` channel to the admin private chat.
 
-- `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
-- `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
+### User Commands
+- **/start**: Available to all users, sends Khmer account selection message with inline keyboard
+- **គូប៉ុង E-GetS Button**: Persistent keyboard button that shows account selection interface
 
-## Packages
+### Stock Management Features
+- **Smart Stock Display**: Shows available stock count for each account type
+- **Out-of-Stock Indicators**: Displays "សូមអភ័យទោស អស់ពីស្តុក 🪤" for empty account types
+- **Visual Distinction**: Clear differentiation between purchasable and out-of-stock items
+- **Automatic Stock Updates**: Real-time stock count updates as accounts are sold
+- **Fast Callback Handling**: Inline button clicks are acknowledged immediately to reduce Telegram loading delays during buying and payment steps.
 
-### `artifacts/api-server` (`@workspace/api-server`)
+### Purchase Flow (Non-Admin Users)
+1. **Account Selection**: Click inline buttons to select account type (e.g., "ទិញ Facebook - មានក្នុងស្តុក 5")
+   - Inline buttons use short hashed callback IDs so long account type names do not exceed Telegram callback limits.
+2. **Quantity Input**: Enter desired quantity after seeing stock and price information
+3. **Purchase Confirmation**: Review order details with inline buttons:
+   - 🚫 បោះបង់ (Cancel Purchase)
+   - ✅ បញ្ជាក់ការទិញ (Confirm Purchase)
+4. **KHQR Payment Generation**: Upon confirmation, bot generates Bakong KHQR with:
+   - Unique transaction ID
+   - Total amount in USD
+   - Merchant details (E-GetS Top Up)  
+   - QR code string for mobile payment
+5. **Payment Verification**: System maintains session with MD5 hash for payment tracking
 
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
+### Admin Commands (ID: 5002402843)
+- **/add_account**: Starts account addition workflow
+  - Step 1: Input accounts in format "phone | password"
+  - Step 2: Input account type
+  - Step 3: Set price per account
+  - Completion: Confirms addition with count, type, and price
 
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+### Session Management
+- **user_sessions**: Tracks conversation state for multi-step workflows
+- **accounts_data**: Stores account information, types, and pricing
+- `/start` clears stale user purchase sessions before showing the account selection menu.
+- Non-critical session saves run in the background to keep customer-facing responses fast.
 
-### `lib/db` (`@workspace/db`)
+### Logging System
+- **Dual Output**: Logs to both console (stdout) and file (`bot.log`)
+- **Unicode Support**: Proper UTF-8 encoding for Khmer text handling
+- **Structured Logging**: Consistent format with timestamps and log levels
 
-Database layer using Drizzle ORM with PostgreSQL. Exports a Drizzle client instance and schema models.
+## Data Flow
 
-- `src/index.ts` — creates a `Pool` + Drizzle instance, exports schema
-- `src/schema/index.ts` — barrel re-export of all models
-- `src/schema/<modelname>.ts` — table definitions with `drizzle-zod` insert schemas (no models definitions exist right now)
-- `drizzle.config.ts` — Drizzle Kit config (requires `DATABASE_URL`, automatically provided by Replit)
-- Exports: `.` (pool, db, schema), `./schema` (schema only)
+1. **Bot Initialization**: Application starts with token from environment/config
+2. **Command Processing**: User sends `/start` command to bot
+3. **Message Response**: Bot replies with predefined Khmer message
+4. **Logging**: All interactions and errors are logged with user information
+5. **Error Handling**: Graceful error management with user-friendly messages
 
-Production migrations are handled by Replit when publishing. In development, we just use `pnpm --filter @workspace/db run push`, and we fallback to `pnpm --filter @workspace/db run push-force`.
+## External Dependencies
 
-### `lib/api-spec` (`@workspace/api-spec`)
+### Core Dependencies
+- **requests**: HTTP library for API communication
+- **Standard Library**: `logging`, `time`, `json`, `sys` for core functionality
 
-Owns the OpenAPI 3.1 spec (`openapi.yaml`) and the Orval config (`orval.config.ts`). Running codegen produces output into two sibling packages:
+### Bot Configuration
+- `BOT_TOKEN`: Telegram bot authentication token (stored securely as `TELEGRAM_BOT_TOKEN` secret)
+- `BOT_USERNAME`: @Coupon2025_Robot
+- `KHMER_MESSAGE`: "ជ្រើសរើស Account ដើម្បីបញ្ជាទិញ"
+- `TELEGRAM_CHANNEL_ID`: Optional channel/group ID for successful purchase notifications. When set, successful payment notifications are sent to both the admin and this channel. Channels usually use an ID like `-1001234567890` and the bot must be an admin/member there.
 
-1. `lib/api-client-react/src/generated/` — React Query hooks + fetch client
-2. `lib/api-zod/src/generated/` — Zod schemas
+### Third-party Services
+- **Telegram Bot API**: Direct HTTP API integration for message handling and user interaction
 
-Run codegen: `pnpm --filter @workspace/api-spec run codegen`
+## Recent Changes
 
-### `lib/api-zod` (`@workspace/api-zod`)
+- Added optional successful purchase notifications to a configured Telegram channel via `TELEGRAM_CHANNEL_ID`.
+- Added channel post relay so messages posted in the configured channel are copied to the admin private chat. E-GetS verification messages are reformatted before sending to the admin as title, email, and code, then automatically deleted after 1 minute. The bot also looks up the buyer by email in purchase history, sends the same formatted verification code to that buyer, and deletes the buyer copy after 1 minute.
 
-Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used by `api-server` for response validation.
+## Deployment Strategy
 
-### `lib/api-client-react` (`@workspace/api-client-react`)
+The application is designed for simple deployment with minimal configuration:
 
-Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
+### Environment Setup
+- Python 3.x runtime required
+- Bot token configuration through environment variables
+- Unicode/UTF-8 support for Khmer text rendering
 
-### `scripts` (`@workspace/scripts`)
+### Scalability Considerations
+- Single-threaded design suitable for moderate traffic
+- Stateless architecture allows for easy horizontal scaling
+- File-based logging may need rotation for production use
 
-Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+### Current Limitations
+- Incomplete error handler implementation
+- Basic command structure (only `/start` implemented)
+- No database integration for user data persistence
+- No webhook support (polling-based operation assumed)
+
+The architecture provides a solid foundation for a Telegram bot with proper separation of concerns and room for future enhancements like additional commands, user state management, and database integration.
