@@ -2380,21 +2380,18 @@ def handle_callback_query(update):
                 answer_callback(callback_query['id'], 'មានបញ្ហាក្នុងការស្វែងរក QR។ សូមចាប់ផ្តើមម្តងទៀត។', True)
                 return
 
-            # Answer immediately so the button spinner clears at once,
-            # then check Bakong — this keeps the UI feeling instant.
-            answer_callback(callback_query['id'], '⏳ កំពុងពិនិត្យ...')
             is_paid, payment_data = check_payment_status(md5)
             if is_paid:
+                answer_callback(callback_query['id'], '✅ បានទទួលការបង់ប្រាក់!')
                 user_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
                 deliver_accounts(chat_id, user_id, session, payment_data=payment_data, user_name=user_name)
                 delete_pending_payment_async(user_id)
                 save_sessions_async()
             else:
-                send_message(
-                    chat_id,
+                answer_callback(
+                    callback_query['id'],
                     "⏳ មិនទាន់បានទទួលការបង់ប្រាក់។\nសូមបង់ប្រាក់ហើយចុចពិនិត្យម្ដងទៀត។",
-                    reply_to_message_id=False,
-                    reply_markup=False,
+                    True,
                 )
             return
 
