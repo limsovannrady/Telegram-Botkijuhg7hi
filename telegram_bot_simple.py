@@ -1001,7 +1001,10 @@ def send_message(chat_id, text, reply_to_message_id=None, parse_mode=None, reply
     if reply_markup == "no_keyboard":
         pass
     else:
-        effective_markup = reply_markup if (reply_markup is not None and reply_markup is not False) else MAIN_REPLY_KEYBOARD
+        if reply_markup is not None and reply_markup is not False:
+            effective_markup = reply_markup
+        else:
+            effective_markup = ADMIN_REPLY_KEYBOARD if is_admin(chat_id) else {'remove_keyboard': True}
         data['reply_markup'] = json.dumps(effective_markup)
 
     if message_effect_id:
@@ -1293,8 +1296,11 @@ ADMIN_REPLY_KEYBOARD = {
 ADMIN_SETTINGS_BTN = '⚙️កំណត់'
 
 def _main_kb(uid):
-    """Return the appropriate main reply keyboard based on whether the user is an admin."""
-    return ADMIN_REPLY_KEYBOARD if is_admin(uid) else MAIN_REPLY_KEYBOARD
+    """Return the appropriate main reply keyboard based on whether the user is an admin.
+
+    Buyers (non-admins) get the keyboard removed instead of the persistent main keyboard.
+    """
+    return ADMIN_REPLY_KEYBOARD if is_admin(uid) else {'remove_keyboard': True}
 
 # ── Admin settings reply-keyboard buttons ──
 BTN_ADD_ACCOUNT     = '➕ បន្ថែម Account'
