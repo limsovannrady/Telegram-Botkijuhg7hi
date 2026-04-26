@@ -315,6 +315,10 @@ def _init_db():
             )
         """)
         _neon_query("""
+            ALTER TABLE bot_pending_payments
+            ADD COLUMN IF NOT EXISTS reserved_accounts JSONB DEFAULT '[]'
+        """)
+        _neon_query("""
             CREATE TABLE IF NOT EXISTS bot_purchase_history (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
@@ -598,10 +602,11 @@ def resume_scheduled_deletions():
 def save_pending_payment(user_id, chat_id, session):
     """Save a pending payment to Neon DB so it persists across sessions."""
     try:
+        reserved = session.get('reserved_accounts') or []
         _neon_query("""
             INSERT INTO bot_pending_payments
-                (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (user_id, chat_id, account_type, quantity, total_price, md5_hash, qr_message_id, reserved_accounts)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (user_id) DO UPDATE SET
                 chat_id = EXCLUDED.chat_id,
                 account_type = EXCLUDED.account_type,
@@ -609,12 +614,14 @@ def save_pending_payment(user_id, chat_id, session):
                 total_price = EXCLUDED.total_price,
                 md5_hash = EXCLUDED.md5_hash,
                 qr_message_id = EXCLUDED.qr_message_id,
+                reserved_accounts = EXCLUDED.reserved_accounts,
                 created_at = NOW()
         """, [
             str(user_id), str(chat_id),
             session.get('account_type'), str(session.get('quantity', 1)),
             str(session.get('total_price', 0)), session.get('md5_hash'),
-            str(session.get('qr_message_id', 0))
+            str(session.get('qr_message_id', 0)),
+            json.dumps(reserved, ensure_ascii=False),
         ])
         logger.info(f"Saved pending payment for user {user_id}")
     except Exception as e:
@@ -626,6 +633,12 @@ def get_pending_payment(user_id):
         r = _neon_query("SELECT * FROM bot_pending_payments WHERE user_id = $1", [str(user_id)])
         if r['rows']:
             row = r['rows'][0]
+            reserved = row.get('reserved_accounts') or []
+            if isinstance(reserved, str):
+                try:
+                    reserved = json.loads(reserved)
+                except Exception:
+                    reserved = []
             return {
                 'state': 'payment_pending',
                 'account_type': row.get('account_type'),
@@ -633,11 +646,39 @@ def get_pending_payment(user_id):
                 'total_price': float(row.get('total_price') or 0),
                 'md5_hash': row.get('md5_hash'),
                 'qr_message_id': int(row.get('qr_message_id') or 0),
-                'chat_id': int(row.get('chat_id') or 0)
+                'chat_id': int(row.get('chat_id') or 0),
+                'reserved_accounts': reserved,
             }
     except Exception as e:
         logger.error(f"Failed to get pending payment: {e}")
     return None
+
+def _release_reserved_accounts(session):
+    """Return a session's reserved accounts to the available pool.
+
+    Called when a purchase is cancelled or the QR expires so that emails held
+    aside for that order become available for other buyers again. Idempotent:
+    after release, the session no longer holds any reservation.
+    """
+    if not session:
+        return
+    reserved = session.get('reserved_accounts') or []
+    if not reserved:
+        return
+    account_type = session.get('account_type')
+    if not account_type:
+        session['reserved_accounts'] = []
+        return
+    try:
+        with _data_lock:
+            pool = accounts_data.setdefault('account_types', {}).setdefault(account_type, [])
+            # Put reservations back at the front to preserve original ordering.
+            accounts_data['account_types'][account_type] = list(reserved) + list(pool)
+        session['reserved_accounts'] = []
+        save_data()
+        logger.info(f"Released {len(reserved)} reserved {account_type} account(s) back to pool")
+    except Exception as e:
+        logger.error(f"Failed to release reserved accounts: {e}")
 
 def delete_pending_payment(user_id):
     """Delete a pending payment from Neon DB."""
@@ -1136,10 +1177,13 @@ def _start_qr_countdown(chat_id, user_id, msg_id, md5_hash, amount, started_at):
                     return
                 if remaining <= 0:
                     delete_message_async(chat_id, msg_id)
+                    expired_session = None
                     with _data_lock:
                         if (user_id in user_sessions
                                 and user_sessions[user_id].get('md5_hash') == md5_hash):
-                            del user_sessions[user_id]
+                            expired_session = user_sessions.pop(user_id)
+                    # Return the held emails to the pool so other buyers can purchase them.
+                    _release_reserved_accounts(expired_session or get_pending_payment(user_id))
                     save_sessions_async()
                     delete_pending_payment_async(user_id)
                     send_message(
@@ -2104,6 +2148,35 @@ def handle_callback_query(update):
             if not session or session.get('state') != 'waiting_for_confirmation':
                 answer_callback(callback_query['id'])
                 return
+
+            # Reserve the exact accounts now so they can't be sold to anyone
+            # else while this user is paying. Stock check + reservation must
+            # happen atomically under the data lock.
+            account_type = session.get('account_type')
+            quantity = session.get('quantity', 1)
+            with _data_lock:
+                pool = accounts_data.get('account_types', {}).get(account_type, [])
+                available = len(pool)
+                if available < quantity:
+                    reserved = None
+                else:
+                    reserved = pool[:quantity]
+                    accounts_data['account_types'][account_type] = pool[quantity:]
+                    session['reserved_accounts'] = list(reserved)
+                    session['available_count'] = len(accounts_data['account_types'][account_type])
+
+            if reserved is None:
+                answer_callback(
+                    callback_query['id'],
+                    f"សូមអភ័យទោស! មានត្រឹមតែ {available} Account នៅក្នុងស្តុក",
+                    True,
+                )
+                with _data_lock:
+                    if user_id in user_sessions:
+                        del user_sessions[user_id]
+                save_sessions_async()
+                return
+            save_data()
             answer_callback(callback_query['id'], 'កំពុងបង្កើត QR...')
             with _data_lock:
                 session['state'] = 'payment_pending'
@@ -2127,6 +2200,7 @@ def handle_callback_query(update):
                         send_message(ADMIN_ID,
                             f"⚠️ *QR Error (user {user_id}):*\n`{err_detail}`",
                             parse_mode="Markdown")
+                    _release_reserved_accounts(session)
                     with _data_lock:
                         if user_id in user_sessions:
                             del user_sessions[user_id]
@@ -2154,6 +2228,7 @@ def handle_callback_query(update):
             except Exception as e:
                 logger.error(f"Error generating KHQR: {type(e).__name__}: {e}")
                 send_message(chat_id, "❌ *មានបញ្ហាក្នុងការបង្កើត QR Code*\n\nសូមព្យាយាមម្តងទៀត។", parse_mode="Markdown")
+                _release_reserved_accounts(session)
                 with _data_lock:
                     if user_id in user_sessions:
                         del user_sessions[user_id]
@@ -2454,7 +2529,7 @@ def handle_callback_query(update):
         # Handle cancel purchase
         elif callback_data == 'cancel_purchase':
             answer_callback(callback_query['id'])
-            session = user_sessions.get(user_id)
+            session = user_sessions.get(user_id) or get_pending_payment(user_id)
             photo_message_id = session.get('photo_message_id') if session else None
             if photo_message_id:
                 delete_message_async(chat_id, photo_message_id)
@@ -2464,6 +2539,8 @@ def handle_callback_query(update):
             dot_msg_id = session.get('dot_message_id') if session else None
             if dot_msg_id:
                 delete_message_async(chat_id, dot_msg_id)
+            # Return reserved accounts to the pool before discarding the session.
+            _release_reserved_accounts(session)
             with _data_lock:
                 if user_id in user_sessions:
                     del user_sessions[user_id]
@@ -2761,9 +2838,12 @@ def handle_message(update):
 
             # Handle stale payment_pending session — silently clear and show menu
             if session.get('state') == 'payment_pending':
+                # Return any reserved emails so they aren't lost.
+                _release_reserved_accounts(session)
                 with _data_lock:
                     del user_sessions[user_id]
                 save_sessions_async()
+                delete_pending_payment_async(user_id)
                 show_account_selection(chat_id)
                 return
 
@@ -3021,8 +3101,18 @@ def deliver_accounts(chat_id, user_id, session, payment_data=None, user_name='')
     if qr_message_id:
         delete_message_async(chat_id, qr_message_id)
 
+    # Prefer the accounts that were reserved when the QR was generated — they
+    # were already removed from the pool so they can't be sold to anyone else.
+    reserved = session.get('reserved_accounts') or []
     with _data_lock:
-        if account_type not in accounts_data['account_types']:
+        if reserved and len(reserved) >= quantity:
+            delivered_accounts = list(reserved)[:quantity]
+            available_count = len(accounts_data.get('account_types', {}).get(account_type, []))
+            # Reservation is consumed by the delivery — clear it on the session.
+            session['reserved_accounts'] = []
+            if user_id in user_sessions:
+                del user_sessions[user_id]
+        elif account_type not in accounts_data['account_types']:
             available_count = None
             delivered_accounts = None
         else:
